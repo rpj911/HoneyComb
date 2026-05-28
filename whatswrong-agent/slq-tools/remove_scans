@@ -1,0 +1,82 @@
+#!/usr/bin/env python3
+import subprocess
+import argparse
+import re
+import fnmatch
+import sys
+
+def getScanList():
+    command_line = "scanlist"
+    res = subprocess.run(command_line, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+    scan_key_list = res.stdout.split('\n')
+    scan_key_list = [key for key in scan_key_list if key]
+    return scan_key_list
+
+def doRemoveScan(scan_key: str):
+    command_line = "scantool -key " + scan_key + " -delete"
+    res = subprocess.run(command_line, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+    if res.stdout:
+        print(scan_key + ": \n" + res.stdout)
+        return 0
+    else:
+        print(scan_key + " removed successfuly")
+        return 1
+    
+def doRemoveScanInList(scan_list: list, remove_num: int):
+    deleted_num = 0
+    failed_scan_key = []
+    for i in range(remove_num):
+        ret = doRemoveScan(scan_list[i])
+        if ret:
+            deleted_num += 1
+        else:
+            failed_scan_key.append(scan_list[i])
+
+    if deleted_num != remove_num:
+        print("One or more scan remove failed: \n")
+        print(failed_scan_key)
+    else:
+        print("{} scans removed successfuly".format(deleted_num))
+
+def confirmDeleting():
+    ans = input("Please double-confirm [y/n]: ")
+    if ans.lower() == 'y':
+        print("Deleting...")
+        return True
+    elif ans.lower() == 'n':
+        print("Deleting cancelled.")
+        return False
+    else:
+        print("Invalid input, please enter 'y' or 'n'.")
+        return confirmDeleting()
+
+
+if __name__ == "__main__":
+    
+    parser = argparse.ArgumentParser(description='Remove installed scan data before uninstall the testing patch')
+    parser.add_argument('--test', action='store_true', help="Testing mode, only 2 scans will be removed")
+    parser.add_argument('--pattern', type=str, nargs='?', default='*', help="Specifies pattern of scan key")
+    parser.add_argument('--dry_run', action='store_true', help="Dry-run mode, no scans will be removed")
+    args = parser.parse_args()
+    testing = args.test
+    dry_run = args.dry_run
+    pattern_regex = fnmatch.translate(args.pattern)
+    pattern = re.compile(pattern_regex)
+    all_scan_key_total = getScanList()
+    all_scan_key = []
+    for scan_key in all_scan_key_total:
+        if pattern.search(scan_key) is not None:
+            all_scan_key.append(scan_key)
+    print("Total {} scans installed, in which {} scans match the pattern {}".format(len(all_scan_key_total), len(all_scan_key), args.pattern))
+    
+    if dry_run:
+        sys.exit(0)
+
+    remove_num = len(all_scan_key)
+    if testing:
+        remove_num = min(2, len(all_scan_key))
+        print("Now in testing mode, only {} scans will be removed".format(remove_num))
+    else:
+        print("Now in normal mode, all scans will be removed")
+    if confirmDeleting():
+        doRemoveScanInList(all_scan_key, remove_num)

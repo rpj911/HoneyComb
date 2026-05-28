@@ -1,0 +1,161 @@
+{
+  "log_sources": [
+    {
+      "name": "syscab_install_log",
+      "path": "/usr/g/service/log/syscab_install.log",
+      "description": "Log of syscab install. Could provide information for remote node shutdown/unreachable."
+    },
+    {
+      "name": "syscab_diag_log",
+      "path": "/usr/g/service/log/syscab_diag.log",
+      "description": "Log of syscab diag. Could provide information for remote node hardware problem (network, RAID, etc)."
+    },
+    {
+      "name": "ge_sys_log",
+      "path": "/usr/g/service/log/gesys_*.log",
+      "description": "Log of system level. High-level problems of all nodes will be gathered in here. Here the gesys_*.log is a match pattern, use ls -l to find the actual name at first."
+    }
+  ],
+  "tools": [
+    {
+      "name": "check_disk",
+      "description": "Check the usage of disk",
+      "command_template": "df -h",
+      "when_to_use": "when you suspect that ths disk is low",
+      "node": "host",
+      "run_as": "root",
+      "timeout": 10,
+      "notes": "If the disk space is low, you should give a warning"
+    },
+    {
+      "name": "check_process",
+      "description": "Check process status",
+      "command_template": "ps aux",
+      "when_to_use": "Check if the target process is running",
+      "node": "host",
+      "run_as": "default",
+      "timeout": 10,
+      "notes": "Combine with grep to filter the process name"
+    },
+    {
+      "name": "check_service_status",
+      "description": "Check systemd service",
+      "command_template": "systemctl status <service_name>",
+      "when_to_use": "Check if the systemd service is running as expected",
+      "node": "host",
+      "run_as": "root",
+      "timeout": 15,
+      "notes": ""
+    },
+    {
+      "name": "check_service_status",
+      "description": "Check systemd service on remote nodes",
+      "command_template": "systemctl status <service_name>",
+      "when_to_use": "Check if the systemd service is running as expected",
+      "node": "sdac",
+      "run_as": "root",
+      "timeout": 15,
+      "notes": "Some important services are managed by systemd on sdac, such as raw-data-service, ge_cpuset and so on"
+    },
+    {
+      "name": "igc1_check_process",
+      "description": "check obelus processes on igc1",
+      "command_template": "ps -ef | grep obelus",
+      "when_to_use": "Need to check if the igc1 works well",
+      "node": "igc1",
+      "run_as": "root",
+      "timeout": 20,
+      "notes": "Use ssh to login igc1, like ssh igc1 ps -ef | grep obelus. Other nodes are the same."
+    },
+    {
+      "name": "Check CT App Up/Down",
+      "description": "Show the status of all processes of CT App",
+      "command_template": "cupstatus",
+      "when_to_use": "When user complains that the CT App is not available",
+      "node": "host",
+      "run_as": "ctuser",
+      "timeout": 10,
+      "nodes": "A very simple command to check if the CT App is up or down. Focus on the percent in the output, if it is not 100%, it means there is something wrong with the CT APP"
+    },
+    {
+      "name": "Shutdown CT App",
+      "description": "Shutdown the CT App",
+      "command_template": "cleanMon",
+      "when_to_use": "If any command need to run with App down, use cleanMon first to make sure that the App is down.",
+      "node": "host",
+      "run_as": "ctuser",
+      "timeout": 600,
+      "notes": "If cleanMon is used once, no need to run again in followed steps. Unless you use st to start the App."
+    },
+    {
+      "name": "Start CT App",
+      "description": "Start the CT App",
+      "command_template": "st",
+      "when_to_use": "If any command need to run with App up, use st first to make sure that the App is up.",
+      "node": "host",
+      "run_as": "ctuser",
+      "timeout": 600,
+      "notes": "If some processes of the CT App fail to start, it may cause the entire App to shutdown."
+    },
+    {
+      "name": "syscab_diag",
+      "description": "Perform syscab diag",
+      "command_template": "syscab diag",
+      "when_to_use": "When there is something wrong with remote nodes",
+      "node": "host",
+      "run_as": "root",
+      "timeout": 300,
+      "notes": "Provides the hardware info of remote nodes. Run syscab diag will diag all nodes. If you want to diagnostic specific node, use syscab diag <node_name>"
+    },
+    {
+      "name": "syscab_option",
+      "description": "Check options installed on remote nodes",
+      "command_template": "syscab option -g <option_name>",
+      "when_to_use": "Remote node is loaded successfully but cannot work properly",
+      "node": "host",
+      "run_as": "root",
+      "timeout": 10,
+      "notes": "In remote nodes we only care about XtreamRecon and HyperResolution options. XtreamRecon enables node: igc2. HyperResolution enables node: xig1."
+    },
+    {
+      "name": "syscab_query",
+      "description": "Check the hardware config of remote nodes",
+      "command_template": "syscab query",
+      "when_to_use": "Need to confirm the hardware type of remote nodes",
+      "node": "host",
+      "run_as": "root",
+      "timeout": 300,
+      "notes": "The result of this command is a 7-digital part number like 6765000. In general, 6765000 is refered as G5, 6764000 is refered as G3, 6764000-2 is refered as G4 and 6765000-w6164299 is refered as Hyper"
+    },
+    {
+      "name": "stop_cup_process",
+      "description": "Shutdown a cup process",
+      "command_template": "cupShutdown stop <process_name>",
+      "when_to_use": "Stop a cup process and do some check",
+      "node": "host",
+      "run_as": "ctuser",
+      "timeout": 60,
+      "notes": "This command will stop a cup process and may cause the entire CT App to shutdown"
+    },
+    {
+      "name": "restart_cup_process",
+      "description": "Restart a cup process",
+      "command_template": "cupShutdown restart <process_name>",
+      "when_to_use": "When try to restart a cup process to see if this can fix something",
+      "node": "host",
+      "run_as": "ctuser",
+      "timeout": 300,
+      "notes": "If you want to restart recon, use RECON_RESTART"
+    },
+    {
+      "name": "Recon stop",
+      "description": "Shutdown the ig_watchdog and the obelus processes on remote nodes",
+      "command_template": "RECON_STOP",
+      "when_to_use": "Need to stop the obelus processes and check something",
+      "node": "host",
+      "run_as": "ctuser",
+      "timeout": 300,
+      "notes": ""
+    }
+  ]
+}

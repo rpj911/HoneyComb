@@ -1,0 +1,217 @@
+#!/usr/bin/env python3
+import logging.handlers
+from HUEClient import HUEClient
+import argparse
+import logging
+import json
+import subprocess
+import os
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)
+
+def doSave(cli: HUEClient, examUuid: str, save_path: str, isAnonymize: bool=False):
+    try:
+        exam = cli.get_exam(examUuid, isAnonymize)
+    except Exception as e:
+        logger.warn(f"{e}")
+    if not exam:
+        logger.warn("Archive save failed")
+    
+    logger.info(f"Archive save done. Saving to {save_path}")
+    with open(save_path, 'w') as f:
+        f.write(json.dumps(exam))
+
+def doRestore(cli: HUEClient, archive_path: str):
+    logger.info(f"Archive restore exam from {archive_path}")
+    with open(archive_path, 'r') as f:
+        content = f.read()
+    content_dict = json.loads(content)
+    try:
+        examUuid = cli.restore_exam(content_dict)
+    except Exception as e:
+        logger.warn(f"{e}")
+
+def doRestoreCmd(cli: HUEClient, archive_path: str):
+    logger.info(f"Archive restore exam from {archive_path}")
+    with open(archive_path, 'r') as f:
+        content = f.read()
+    content_dict = json.loads(content)
+    content_str = json.dumps(content_dict)
+    command_line = 'curl -k ' + cli.hue_exam_service_post_url + " --header 'Content-Type: application/json'" + " --data-raw " + "'" + content_str + "'"
+    logger.info(f"\nCall Restore/Unarchive by running:\n{command_line}")
+    res = subprocess.run(command_line, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+    logger.info(res.stdout)
+        
+
+def doGetExam(cli: HUEClient, examUuid: str, save_path: str):
+    try:
+        exam = cli.get_exam(examUuid, isArchive=False)
+    except Exception as e:
+        logger.warn(f"{e}")
+    if not exam:
+        logger.info("Get exam failed.")
+
+    logger.info(f"Get exam done. Saving to {save_path}")
+    with open(save_path, 'w') as f:
+        f.write(json.dumps(exam))
+
+def doGetExamCmd(cli: HUEClient, examUuid: str):
+    get_url = os.path.join(cli.hue_exam_service_url, examUuid) + '/'
+    command_line = 'curl -k ' + "'" + get_url + "'"
+    logger.info(f"Get exam: {examUuid} by running: {command_line}")
+    res = subprocess.run(command_line, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+    # print(res.stdout)
+    res_json = json.loads(res.stdout)
+    if "dataType" in res_json:
+        logger.info("Get exam OK")
+        logger.info(res_json)
+    else:
+        logger.info("Get exam failed")
+        logger.info(res_json)
+        
+def doGetExamList(cli: HUEClient):
+    try:
+        exams = cli._get_exam_list()
+    except Exception as e:
+        logger.warn(f"{e}")
+    if exams:
+        logger.info("Get exam list done.")
+        print(exams)
+    else:
+        logger.info("Get exam list failed.")
+
+def doCreateExam(cli: HUEClient, payload_path: str):
+    with open(payload_path, 'r') as pf:
+        payload = pf.read()
+    
+    try:
+        payload_json = json.loads(payload)
+    except Exception as e:
+        logger.warn(f"Load payload failed: {e}")
+        return
+    
+    try:
+        examUuid = cli._create_exam(payload_json)
+    except Exception as e:
+        logger.warn(f"{e}")
+
+    logger.info(f"Create exam done with content from {payload_path}. ExamUuid={examUuid}")
+    return examUuid
+
+def doDeleteExam(cli: HUEClient, examUuid: str):
+    try:
+        ok = cli._delete_exam(examUuid)
+    except Exception as e:
+        logger.warn(f"{e}")
+    
+    if not ok:
+        logger.warn("Delete exam failed")
+        return
+    
+    logger.info("Delete exam done")
+
+def doAuto(cli: HUEClient, payload_path: str):
+    logger.info(f"Starting auto test...")
+
+    logger.info(f"Create exam from payload: {payload_path}")
+    examUuid = doCreateExam(cli, payload_path)
+    logger.info(f"Get exam: {examUuid}")
+    doGetExam(cli, examUuid, f"exam-{examUuid}")
+    logger.info(f"Save exam: {examUuid}")
+    doSave(cli, examUuid, f"exam-archive-{examUuid}")
+    logger.info(f"Delete exam: {examUuid}")
+    doDeleteExam(cli, examUuid)
+    logger.info(f"Restore exam from: exam-archive-{examUuid}")
+    doRestore(cli, f"exam-archive-{examUuid}")
+
+def doEnd(cli: HUEClient, examUuid: str):
+    try:
+        ok = cli._end_exam(examUuid)
+    except Exception as e:
+        logger.warn(f"{e}")
+    
+    if not ok:
+        logger.warn("End exam failed")
+        return
+    
+    logger.info("End exam done")
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Command line utility for managing exam data.")
+    parser.add_argument('--log_file', type=str, default="/usr/g/service/log/huetool.log", help="The absolute path to the log file ex: /path/to/file.log")
+
+    subparsers = parser.add_subparsers(dest='command', help='Subcommands')
+
+    parser_list = subparsers.add_parser('list', help='List available exams.')
+
+    parser_save = subparsers.add_parser('save', help='Save exam data.')
+    parser_save.add_argument('--examUuid', required=True, type=str, help='UUID of the exam to save.')
+    parser_save.add_argument('--path', default=None, type=str, help='Path where to save the exam data.')
+    parser_save.add_argument('--anonymize', action='store_true', help='Anonymize or not.')
+
+    parser_restore = subparsers.add_parser('restore', help='Restore exam data from a file.')
+    parser_restore.add_argument('--path', required=True, type=str, help='Path from which to restore the exam data.')
+
+    parser_get = subparsers.add_parser('get', help='Get exam data by UUID.')
+    parser_get.add_argument('--examUuid', required=True, type=str, help='UUID of the exam to get.')
+    parser_get.add_argument('--path', default=None, type=str, help='Path associated with the exam data.')
+
+    parser_create = subparsers.add_parser('create', help='Create exam with a given payload file')
+    parser_create.add_argument('--path', required=True, type=str, help='Path of the payload file')
+
+    parser_delete = subparsers.add_parser('delete', help='Delete exam with given examUuid')
+    parser_delete.add_argument('--examUuid', required=True, type=str, help='UUID of the exam to delete.')
+
+    parser_auto = subparsers.add_parser('auto', help='Run a auto test sequence: create-get-save-delete-restore')
+    parser_auto.add_argument('--path', required=True, type=str, help='Path of the payload file')
+
+    parser_end = subparsers.add_parser('end', help='End an exam by UUID.')
+    parser_end.add_argument('--examUuid', required=True, type=str, help='UUID of the exam to end.')
+
+    args = parser.parse_args()
+    if args.command == 'save' and args.path == None and args.examUuid:
+        args.path = f"exam-archive-{args.examUuid}"
+    elif args.command == 'get' and args.path == None and args.examUuid:
+        args.path = f"exam-{args.examUuid}"
+
+    # adds logging to the console
+    handler = logging.StreamHandler()
+    handler.setFormatter(logging.Formatter('%(levelname)s:huetool-{0}:%(message)s'.format(args.command)))
+    handler.setLevel(logging.INFO)
+    # adds logging to an output file
+    file_handler = logging.handlers.RotatingFileHandler(args.log_file, maxBytes=10000000, backupCount=5) #each file is 10 MB
+    file_handler.setFormatter(logging.Formatter('%(asctime)s.%(msecs)03d %(levelname)s huetool-{0}: %(message)s'.format(args.command), datefmt='%Y-%m-%d %H:%M:%S'))
+    file_handler.setLevel(logging.DEBUG)
+
+    logger.addHandler(handler)
+    logger.addHandler(file_handler)
+
+    try:
+        hue_cli = HUEClient(logger)
+    except Exception as e:
+        logger.warn(f"HUEClient initialazation failed: {e}")
+        return
+
+
+
+    if args.command == 'list':
+        doGetExamList(hue_cli)
+    elif args.command == 'save':
+        doSave(hue_cli, args.examUuid, args.path, args.anonymize)
+    elif args.command == 'restore':
+        doRestoreCmd(hue_cli, args.path)
+    elif args.command == 'get':
+        doGetExamCmd(hue_cli, args.examUuid)
+    elif args.command == 'create':
+        doCreateExam(hue_cli, args.path)
+    elif args.command == 'delete':
+        doDeleteExam(hue_cli, args.examUuid)
+    elif args.command == 'auto':
+        doAuto(hue_cli, args.path)
+    elif args.command == 'end':
+        doEnd(hue_cli, args.examUuid)
+
+if __name__ == '__main__':
+    main()

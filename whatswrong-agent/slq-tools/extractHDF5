@@ -1,0 +1,65 @@
+#!/usr/bin/env python3
+import h5py
+import argparse
+from pathlib import Path
+
+def extract(file_path: str, h5_path: str):
+    _acqHeader = "acqHeader"
+    _extraHeader = "extraHeader"
+    _calModules = "calModules"
+    _offsetVectors = "offsetVectors"
+    _calDescriptors = "calDescriptors"
+    _rawDataDescriptors = "rawDataDescriptors"
+    _calVectors = "calVectors"
+    _examInfoService = "examInfoService"
+
+    with h5py.File(file_path) as hf:
+        keys = [x for x in hf.keys()]
+    
+    file_Path = Path(file_path)
+    if not file_Path.exists():
+        raise FileNotFoundError(f"File not found: {file_Path}")
+    
+    try:
+        with h5py.File(file_path, 'r') as f:
+            parts = Path(h5_path).parts
+            current_group = f
+            for part in parts:
+                current_group = current_group[part]
+            if isinstance(current_group, h5py.Dataset):
+                if(len(current_group.shape) == 0):
+                    data = current_group[()]
+                else:
+                    data = current_group[:]
+            else:
+                print(f"Node path: '{h5_path}' is not point to a dataset")
+            return data
+    except KeyError as e:
+        raise KeyError(f"Invalid node path: '{h5_path}'") from e
+    except Exception as e:
+        raise Exception(f"{e}")
+    
+
+    
+
+def _main():
+    parser = argparse.ArgumentParser(description="Extract data in HDF5")
+    parser.add_argument('--input', type=str, required=True, help="HDF5 file path")
+    parser.add_argument('--node', type=str, required=True, help="HDF5 node path")
+    parser.add_argument('--output', type=str, required=True, help="Output file path")
+    parser.add_argument('--type', type=str, required=True, help="Type of the target node, str or binary")
+
+    args = parser.parse_args()
+    
+    data = extract(args.input, args.node)
+
+    if args.type == 'str':
+        with open(args.output, 'w') as f:
+            f.write(data)
+    elif args.type == 'blob':
+        with open(args.output, 'wb') as f:
+            f.write(data)
+    print(f"Saved to {args.output} as {'Str' if args.type == 'str' else 'Blob'}")
+
+if __name__ == '__main__':
+    _main()

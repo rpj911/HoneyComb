@@ -1,0 +1,269 @@
+#!/usr/bin/env python3
+from AcqHeaderDefination.SfScanHeader import ACQUISITION_HEADER_TYPE
+from AcqHeaderDefination.ScanSysData import EXAM_LEVEL_INFO_TYPE
+from inspect_ffp_file import inspect_ffp_file
+import argparse
+import ctypes
+import subprocess
+import shutil
+import os
+import pathlib
+import math
+import click
+
+def generateOriginScankey(ffp_path: str):
+    p = pathlib.Path(ffp_path)
+    return p.stem if p.suffix == '.ffp' else p.name
+
+def getExamLevelInfo(blob):
+    if len(blob) == ctypes.sizeof(ACQUISITION_HEADER_TYPE):
+        try:
+            acqhdr = ACQUISITION_HEADER_TYPE.from_buffer_copy(blob)
+            exam_level_info = acqhdr.exam_level_info
+            return exam_level_info
+        except Exception as e:
+            print("error on resolve the acqheader blob")
+    else:
+        print("Size of input blob does NOT match the size of ACQUISITION_HEADER_TYPE")
+
+def getSeriesLevelInfo(blob):
+    if len(blob) == ctypes.sizeof(ACQUISITION_HEADER_TYPE):
+        try:
+            acqhdr = ACQUISITION_HEADER_TYPE.from_buffer_copy(blob)
+            series_level_info = acqhdr.series_level_info
+            return series_level_info
+        except Exception as e:
+            print("error on resolve the acqheader blob")
+    else:
+        print("Size of input blob does NOT match the size of ACQUISITION_HEADER_TYPE")
+
+def getScanLevelInfo(blob):
+    if len(blob) == ctypes.sizeof(ACQUISITION_HEADER_TYPE):
+        try:
+            acqhdr = ACQUISITION_HEADER_TYPE.from_buffer_copy(blob)
+            scan_level_info = acqhdr.scan_level_info
+            return scan_level_info
+        except Exception as e:
+            print("error on resolve the acqheader blob")
+    else:
+        print("Size of input blob does NOT match the size of ACQUISITION_HEADER_TYPE")
+
+def getScanNumber(blob):
+    if len(blob) == ctypes.sizeof(ACQUISITION_HEADER_TYPE):
+        try:
+            scan_number = int.from_bytes(blob[408:412], byteorder='little')
+            return scan_number
+        except Exception as e:
+            print("error on resolve the acqheader blob")
+    else:
+        print("Size of input blob does NOT match the size of ACQUISITION_HEADER_TYPE")
+
+def structToDict(struct_instance):
+    return {field: getattr(struct_instance, field) for field, _ in struct_instance._fields_}
+
+def generateMockedExamNum(exam_number: int, num: int):
+    exam_offset = 700
+    exam_num_mock = []
+    for i in range(num):
+        exam_num_new = exam_number + exam_offset + i
+        exam_num_mock.append(exam_num_new)
+
+    return exam_num_mock
+
+def generateMockedExamSeriesScanNum(exam_number: int, series_number: int, scan_number: int, num: int, series_per_exam: int, scans_per_series: int):
+    exam_offset = 50
+    series_offset = 50
+    scan_offset = 50
+    series_count_fixed = series_per_exam
+    scan_count_fiexed = scans_per_series
+    exam_count = num // (series_count_fixed * scan_count_fiexed)
+    scan_count_padding = num - exam_count * series_count_fixed * scan_count_fiexed
+    ret = []
+
+    for i in range(exam_count):
+        exam_number_new = exam_number + exam_offset + i
+        for j in range(series_count_fixed):
+            series_number_new = series_number + series_offset + j
+            for k in range(scan_count_fiexed):
+                scan_number_new = scan_number + scan_offset + k
+                ret.append((exam_number_new, series_number_new, scan_number_new))
+
+    for i in range(scan_count_padding):
+        ret.append((exam_number + exam_offset + exam_count, series_number + series_offset, scan_number + scan_offset + i))
+
+    return ret
+    
+
+def generateMockedScankey(scan_key_origin: str, exam_number_mock: int, series_number_mock: int, scan_number_mock: int):
+    suite, exam, seris, scan, unique = scan_key_origin.split('.', 4)
+    return suite + '.' + str(exam_number_mock) + '.' + str(series_number_mock) + '.' + str(scan_number_mock) + '.' + unique
+
+def generateMockedAcqhdr(acqhdr_blob: ACQUISITION_HEADER_TYPE, exam_level_info: ctypes.Structure, exam_num: int, series_level_info: ctypes.Structure, series_number: int, scan_number: int):
+    exam_level_info.exam_number = ctypes.c_int32(exam_num)
+    acqhdr_blob.exam_level_info = exam_level_info
+    series_level_info.series_number = ctypes.c_int32(series_number)
+    acqhdr_blob.series_level_info = series_level_info
+    
+    acqhdr_blob.scan_number = ctypes.c_int32(scan_number)
+    return ctypes.string_at(ctypes.byref(acqhdr_blob), ctypes.sizeof(ACQUISITION_HEADER_TYPE))
+
+def generateMockedFFP(output_dir: str, scan_key_mock: str, ffp_origin: inspect_ffp_file.InspectFfpFile, acqhdr_blob):
+    new_ffp_name = scan_key_mock + ".ffp"
+    new_ffp_path = os.path.join(output_dir, new_ffp_name)
+
+    # copy the origin FFP to a new FFP, then write the mocked acqHeader into the new FFP
+    try:
+        shutil.copy2(ffp_origin.filename, new_ffp_path)
+    except IOError as e:
+        print(f"Unable to copy file. {e}")
+    except Exception as ex:
+        print(f"Unexpected error: {ex}")
+
+    ffp_mock = inspect_ffp_file.InspectFfpFile(new_ffp_path)
+    ffp_mock.writeSegment(1, acqhdr_blob)
+    return new_ffp_path
+    
+    
+def checkDBCapacity():
+    command_line = "scanlist"
+    res = subprocess.run(command_line, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+    scan_key_list = res.stdout.split('\n')
+    scan_key_list = [key for key in scan_key_list if key]
+    
+    command_line = "examlist"
+    res = subprocess.run(command_line, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+    exam_list = res.stdout.split('\n')
+    exam_list = [key for key in exam_list if key]
+
+    return len(scan_key_list), len(exam_list), scan_key_list
+
+def doInstall(ffp_list: list, clean: bool):
+    with click.progressbar(ffp_list) as bar:
+        for ffp in bar:
+            command_line = "scantool -install " + ffp
+            res = subprocess.run(command_line, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+            if clean:
+                command_line = "rm -rf " + ffp
+                res = subprocess.run(command_line, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+
+def confirmInstalling():
+    ans = input("Please double-confirm [y/n]: ")
+    if ans.lower() == 'y':
+        print("Installing...")
+        return True
+    elif ans.lower() == 'n':
+        print("Installation cancelled.")
+        return False
+    else:
+        print("Invalid input, please enter 'y' or 'n'.")
+        return confirmInstalling()
+    
+def checkInstallation(scan_num_before: int, scan_nums_expected: int, scan_key_list_origin: list, scan_key_list_install: list):
+    command_line = "scanlist"
+    res = subprocess.run(command_line, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+    scan_key_list = res.stdout.split('\n')
+    scan_key_list = [key for key in scan_key_list if key]
+    if len(scan_key_list) - scan_num_before == scan_nums_expected:
+        return True, []
+    else:
+        scan_key_list_installed = set(scan_key_list) - set(scan_key_list_origin)
+        return False, set(scan_key_list_install) - scan_key_list_installed
+
+def main():
+    parser = argparse.ArgumentParser(description="Mock some scans with different scankey")
+    parser.add_argument('--ffp_path', type=str, required=True, help='Path to the ffp file')
+    parser.add_argument('--output_dir', type=str, default=".", help='Output directory. Default to current dir')
+    parser.add_argument('--count', type=int, help='Number of mocked scan')
+    parser.add_argument('--percent', type=int, help='Percent of fulfill the Scan DB. Based on 1500 scan.')
+    parser.add_argument('--series_per_exam', type=int, default=5, help='How much series belong to an exam')
+    parser.add_argument('--scans_per_series', type=int, default=5, help='How much series belong to an exam')
+    parser.add_argument('--dry_run', action='store_true', help='Dry run mode, does not execute actions')
+    parser.add_argument('--install', action='store_true', help='If true, install the mocked FFP to Scan DB')
+    parser.add_argument('--clean', action='store_true', help='If true, remove the generated FFP files after installation. Only work with --install option.')
+    args = parser.parse_args()
+
+    # Check args
+    if (args.count is None) and (args.percent is None):
+        print("Error: At least one of the parameters --count or --percent must be provided.")
+        return
+    if (args.count is not None) and (args.percent is not None):
+        print("Error: Parameters --count and --percent conflict.")
+        return
+
+    if args.clean and not args.install:
+        print("--clean option only works with --install")
+        return
+
+    # Check Scan DB
+    max_exam = 300
+    max_scan = 1500
+    scan_num_now, exam_num_now, scan_key_list = checkDBCapacity()
+    scan_num_free = max_scan - scan_num_now
+    exam_num_free = max_exam - exam_num_now
+    print(f"Now {exam_num_now} exams with {scan_num_now} scans installed, {exam_num_free} exams or {scan_num_free} scans free")
+    
+    series_per_exam = max(args.series_per_exam, int(math.sqrt(scan_num_free / exam_num_free)))
+    scans_per_series = max(args.scans_per_series, int(math.sqrt(scan_num_free / exam_num_free)))
+    count = args.count if args.count else int(args.percent * max_scan / 100)
+    
+    if count > scan_num_free:
+        print(f"Specified count ({count}) exceeds the limit of Scan DB ({max_exam} exams or {max_scan} scans)")
+        return
+
+    if isinstance(args.ffp_path, str):
+        scan_key_origin = generateOriginScankey(args.ffp_path) # Assume that the FFP filename is like Scankey.ffp
+        try:
+            ffp = inspect_ffp_file.InspectFfpFile(args.ffp_path)
+
+        except Exception as e:
+            print("Read {} failed. Program exit".format(args.ffp_path))
+            return
+    
+    acqhdr_blob = ffp.readSegment(1) # for acqHeader
+    exam_level_info = getExamLevelInfo(acqhdr_blob)
+    series_level_info = getSeriesLevelInfo(acqhdr_blob)
+    scan_level_info = getScanLevelInfo(acqhdr_blob)
+    scan_number = getScanNumber(acqhdr_blob)
+    exam_series_scan_mock_list = generateMockedExamSeriesScanNum(exam_level_info.exam_number, series_level_info.series_number, scan_number, count, series_per_exam, scans_per_series)
+    # exam_num_list_mock = generateMockedExamNum(exam_level_info.exam_number, args.scan_count)
+    print(f"Exam Number: {exam_level_info.exam_number}, Series Number: {series_level_info.series_number}, Scan Number: {scan_number}")
+    print(f"Total {len(exam_series_scan_mock_list)} exam.series.scan tuple mocked")
+
+
+    if args.dry_run:
+        print("Dry run mode. No mocked FFP generated or installed")
+        return
+    
+    scan_key_mock_list = []
+    ffp_mock_list = []
+
+    print("Generating...")
+    with click.progressbar(exam_series_scan_mock_list) as bar:
+        for ess in bar:
+            acqhdr_blob_mock = generateMockedAcqhdr(ACQUISITION_HEADER_TYPE.from_buffer_copy(acqhdr_blob), exam_level_info, ess[0], series_level_info, ess[1], ess[2])
+            scan_key_mock = generateMockedScankey(scan_key_origin, ess[0], ess[1], ess[2])
+            scan_key_mock_list.append(scan_key_mock)
+            ffp_mock_path = generateMockedFFP(args.output_dir, scan_key_mock, ffp, acqhdr_blob_mock)
+            ffp_mock_list.append(ffp_mock_path)
+    
+    print(f"Total {len(ffp_mock_list)} mocked FFP saved into {args.output_dir}")
+    print(f"Scankey from {scan_key_mock_list[0]} to {scan_key_mock_list[-1]}")
+
+    if args.install:
+        print("Option: --install Detected. Mocked FFPs will be installed into Scan DB")
+        if args.clean:
+            print(f"Option: --clean Detected. Mocked FFPs will be deleted from {args.output_dir} after installation")
+        if confirmInstalling():
+            print("Installing...")
+            doInstall(ffp_mock_list, args.clean)
+            ok, failure = checkInstallation(scan_num_now, args.scan_count, scan_key_list, scan_key_mock_list)
+            if ok:
+                print("All {} generated FFP installed successfully.")
+            else:
+                print("One or more generated FFP install failed:")
+                print(failure)
+                print("Please check if there is any scan key conflict.")
+
+
+if __name__ == "__main__":
+    main()
