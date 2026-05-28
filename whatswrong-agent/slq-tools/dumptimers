@@ -1,0 +1,96 @@
+#!/usr/bin/env python3
+import subprocess
+import os
+import argparse
+import psutil
+import sys
+import signal
+import re
+import itertools
+
+timers_dir = '/usr/g/service/log'
+
+def get_pid(process: str) -> int:
+    for proc in psutil.process_iter(['pid', 'name']):
+        try:
+            if proc.info['name'] == process:
+                return proc.info['pid']
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+            pass
+    return -1
+
+def get_dump_name(process: str):
+    timers_path = os.path.join(timers_dir, process + ".timers.log")
+    if not os.path.exists(timers_path):
+        raise RuntimeError(f"timers.log of {process} not found")
+    
+    pattern = re.compile(rf'^{re.escape(process + ".timers.log")}\.dump(\d+)$')
+    max_dump_num = 0
+    has_dump_files = False
+
+    for filename in os.listdir(timers_dir):
+        if not os.path.isfile(filename):
+            continue
+        match = pattern.match(filename)
+        if match:
+            has_dump_files = True
+            dump_num = int(match.group(1))
+            max_dump_num = max(max_dump_num, dump_num)
+    
+    if has_dump_files:
+        next_dump_num = max_dump_num + 1
+    else:
+        next_dump_num = 1
+    
+    next_filename = f"{timers_path}.dump{next_dump_num}"
+    last_filename = f"{timers_path}.dump{max_dump_num}"
+    return os.path.join(timers_dir, next_filename), os.path.join(timers_dir, last_filename) if max_dump_num > 0 else None
+
+def dump_timers(timers_path: str, dump_path: str):
+    cmd = ['ptimers', '-r', timers_path]
+    with open(dump_path, 'w') as f:
+        status = subprocess.run(cmd, stdout=f, stderr=subprocess.PIPE, universal_newlines=True)
+    return status
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description="Dump timer.log")
+    parser.add_argument('--process', type=str, required=True, help="Target process")
+    parser.add_argument('--diff', action='store_true', help="Show diff between dumps")
+
+    args = parser.parse_args()
+
+    process = args.process
+    diff = args.diff
+    pid = get_pid(process)
+    if pid == -1:
+        print(f"Error: Process {process} not found")
+        sys.exit(1)
+    print(f"Found process: {process}, pid: {pid}")
+    # To make sure the process flush the latest log into timers.log
+    os.kill(pid, signal.SIGINT)
+
+    try:
+        dump_name, last_name = get_dump_name(process)
+        print(f"Found latest dump: {last_name}. Try dump to {dump_name}")
+    except RuntimeError:
+        print(f"Process {process} has no timers.log")
+        sys.exit(1)
+    
+    status = dump_timers(os.path.join(timers_dir, process + ".timers.log"), dump_name)
+    if status.returncode or not os.path.exists(dump_name):
+        print(f"Error occured when dumping timers.log of {process}")
+        sys.exit(1)
+    print(f"Dumped to {dump_name}")
+
+    if diff and last_name:
+        with open(last_name, 'r') as f1, open(dump_name, 'r') as f2:
+            diff_lines = [line1 for line1, line2 in itertools.zip_longest(f1, f2) if line1 != line2]
+            if diff_lines:
+                print(f"Increasement than {last_name}:")
+                for line in diff_lines:
+                    print(line.strip())
+            else:
+                print(f"No increasement found than {last_name}")
+    elif diff and not last_name:
+        print("This is the first dump")

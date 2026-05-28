@@ -1,0 +1,49 @@
+{
+  "ollama": {
+    "base_url": "http://10.189.130.78:11434",
+    "model": "qwen3.5:9b",
+    "timeout": 120
+  },
+  "knowledge_dir": "knowledge",
+  "max_iterations": 10,
+  "command_timeout": 30,
+  "default_user": "ctuser",
+  "nodes": [
+    "sdac",
+    "igc1",
+    "igc2",
+    "xig1"
+  ],
+  "allowed_commands": [
+    "journalctl",
+    "dmesg",
+    "systemctl",
+    "df",
+    "free",
+    "top",
+    "ps",
+    "ping",
+    "ip",
+    "cat",
+    "tail",
+    "grep",
+    "find",
+    "ls",
+    "uname",
+    "uptime",
+    "syscab",
+    "cupstatus",
+    "cleanMon",
+    "st",
+    "cupShutdown",
+    "RECON_STOP",
+    "RECON_START",
+    "RECON_RESTART"
+  ],
+  "log_rules": {
+    "error_keywords": ["ERROR", "EE", "CRITICAL", "Exception", "Traceback", "FATAL"],
+    "warning_keywords": ["WARN", "WARNING", "WW"],
+    "max_lines_to_llm": 200,
+    "tail_lines": 500
+  }
+}

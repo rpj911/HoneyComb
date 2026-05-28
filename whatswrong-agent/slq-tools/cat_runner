@@ -1,0 +1,392 @@
+#!/usr/bin/env python3
+import os
+import subprocess
+import argparse
+import glob
+import datetime
+import fnmatch
+from concurrent.futures import ProcessPoolExecutor, as_completed
+import re
+import pathlib
+from typing import List
+import time
+
+# logging path defination
+recon_timing_log = "/usr/g/service/log/recon_timings.csv"
+ig_obelus_log = "/usr/g/igc1/usr/g/log/ig_obelus.log"
+
+class SingleCatCase:
+    def __init__(self, cat_filename: str, time: int):
+        self.cat_filename = cat_filename
+        self.time = time
+        self.scankey = get_scankey_from_cat(cat_filename)
+        self.rds_client_uuid = None
+
+    def run_multi_times(self):
+        cmd = f"drive {self.cat_filename}"
+        all_r = 0
+        for t in range(self.time):
+            print(f"Running catfile {self.cat_filename} for {t + 1}/{self.time}")
+            r, err = popen(cmd)
+            all_r += r
+            if r != 0:
+                print(f"Command '{cmd}' failed with return code {r}")
+                print(f"Error output: {err}")
+            else:
+                print(f"Catfile {self.cat_filename} executed successfully")
+        return all_r
+
+    def run_single_time(self):
+        cmd = f"drive {self.cat_filename}"
+        print(f"Running catfile {self.cat_filename}")
+        r, err = popen(cmd)
+        print(f"Catfile {self.cat_filename} executed {'ok' if r == 0 else 'failed'}")
+        return r
+
+def get_scankey_from_cat(cat_filename: str):
+    with open(cat_filename, 'r') as cat:
+        lines = cat.readlines()
+    
+    start_idx = None
+    for i, line in enumerate(lines):
+        if re.search(r'\bstruct\s+scan_key\s*\{', line):
+            start_idx = i
+            break
+
+    if start_idx is None:
+        raise ValueError("scan_key not found in file")
+
+    data_lines = lines[start_idx + 1 : start_idx + 1 + 7]
+    values = {}
+    patterns = {
+        'exam_number': r'int\s+exam_number\s*=\s*(\d+)',
+        'scan_number': r'int\s+scan_number\s*=\s*(\d+)',
+        'series_number': r'int\s+series_number\s*=\s*(\d+)',
+        'suite_id': r'string\s+suite_id\s*=\s*"([^"]+)"',
+        'unique_sec': r'int\s+unique_sec\s*=\s*(\d+)',
+        'unique_usec': r'int\s+unique_usec\s*=\s*(\d+)',
+    }
+    for line in data_lines:
+        for key, pattern in patterns.items():
+            if key not in values:
+                match = re.search(pattern, line)
+                if match:
+                    values[key] = match.group(1)
+
+    required = ['suite_id', 'exam_number', 'series_number', 'scan_number', 'unique_sec', 'unique_usec']
+    if not all(k in values for k in required):
+        missing = [k for k in required if k not in values]
+        raise ValueError(f"Missing fields: {missing}")
+
+    result = f"{values['suite_id']}.{values['exam_number']}.{values['series_number']}.{values['scan_number']}.{values['unique_sec']}.{values['unique_usec']}"
+    return result
+
+def get_file_position(log_path: str):
+    try:
+        return os.path.getsize(log_path)
+    except FileNotFoundError:
+        return 0
+
+def read_log_increment(log_path: str, start_position: int):
+    try:
+        with open(log_path, 'r', encoding='utf-8') as f:
+            f.seek(start_position)
+            inc = f.read()
+    except FileNotFoundError:
+        return ""
+    return inc
+
+def popen(*argv,**kw):
+    "Simple command runner returns status and stdout"
+    print(f"Executing: {argv}")
+    cmd = subprocess.Popen(argv, stdout=subprocess.PIPE, shell=True, universal_newlines=True, **kw)
+    stdout,stderr = cmd.communicate()
+    r = cmd.wait()
+    return r, "" if stderr is None else stderr.strip()
+
+def run_cat_multi_time(cat_filename: str, time: int = 3):
+    cmd = f"drive {cat_filename}"
+    all_r = 0
+    for t in range(time):
+        print(f"Running catfile {cat_filename} for {t + 1}/{time}")
+        r, err = popen(cmd)
+        all_r += r
+        if r != 0:
+            print(f"Command '{cmd}' failed with return code {r}")
+            print(f"Error output: {err}")
+        else:
+            print(f"Catfile {cat_filename} executed successfully")
+    return all_r
+
+def _run_cat_single_time_wrapper(case: SingleCatCase):
+    return case.run_single_time()
+
+def run_cat_concurrent(cases: List[SingleCatCase]):
+    print(f"Starting {len(cases)} processes to run concurrently")
+    all_round_ok = True
+    all_round_results = []
+    for t in range(cases[0].time):
+        print(f"Running {cases[0].cat_filename} and {cases[1].cat_filename} for round {t + 1}/{cases[0].time}")
+        all_cat_ok = True
+        with ProcessPoolExecutor(max_workers=len(cases)) as executor:
+            futures = {
+                executor.submit(_run_cat_single_time_wrapper, case): case for case in cases
+            }
+            results = []
+            
+            for future in as_completed(futures):
+                r = future.result()
+                if r != 0:
+                    all_cat_ok = False
+                results.append(r)
+        if not all_cat_ok:
+            print(f"At least one cat failed for round {t + 1}/{cases[0].time}")
+            all_round_ok = False
+        else:
+            print(f"All {len(cases)} processes returned successfully for round {t + 1}/{cases[0].time}")
+        all_round_results.append(results)
+    if not all_round_ok:
+        print("At least one round failed")
+    else:
+        print(f"All {cases[0].time} rounds ok")
+    return all_round_results
+
+def run_cat_concurrent_single_time(cases: List[SingleCatCase]):
+    print(f"Starting {len(cases)} processes to run concurrently")
+    all_cat_ok = True
+    with ProcessPoolExecutor(max_workers=len(cases)) as executor:
+        futures = {
+            executor.submit(_run_cat_single_time_wrapper, case): case for case in cases
+        }
+        results = []
+        
+        for future in as_completed(futures):
+            r = future.result()
+            if r != 0:
+                all_cat_ok = False
+            results.append(r)
+    return sum(results)
+
+def protocol_matches(protocol: str, filter_pattern: str) -> bool:
+    if filter_pattern is None:
+        return False
+    return fnmatch.fnmatch(protocol, filter_pattern)
+
+def analysis_recon_timing_log(target_case: SingleCatCase, lines: List[str], protocol_filter: str = None):
+    lines = []
+    TTFIs = []
+    FPSs = []
+    TTLIs = []
+    timestamp_request = []
+    timestamp_first_image = []
+    timestamp_last_image = []
+    for new_line in lines:
+        if new_line.startswith("##"):
+            lines.append(f"{target_case.cat_filename}    Failed:{new_line}\n")
+        else:
+            elements = [e for e in new_line.split(',') if e]
+            if len(elements) != 10:
+                lines.append(f"{target_case.cat_filename}    Invalid line: {new_line}\n")
+                continue
+            
+            protocol = elements[0]
+            if protocol_matches(protocol, protocol_filter):
+                print(f"Skipping line with filtered-out protocol: {protocol}")
+                continue
+            
+            TTFIs.append(float(elements[3]))
+            FPSs.append(float(elements[4]))
+            TTLIs.append(float(elements[5]))
+            timestamp_request.append(float(elements[6]))
+            timestamp_first_image.append(float(elements[8]))
+            timestamp_last_image.append(float(elements[9]))
+            request_time = datetime.datetime.fromtimestamp(float(elements[6]))
+            first_image_time = datetime.datetime.fromtimestamp(float(elements[8]))
+            last_image_time = datetime.datetime.fromtimestamp(float(elements[9]))
+            lines.append(f"{target_case.cat_filename}    Success    Protocol={elements[0]}, TTFI={elements[3]}, FPS={elements[4]}, TTLI={elements[5]}, RequestTime={request_time.strftime('%Y-%m-%d %H:%M:%S.%f')}, FirstImageTime={first_image_time.strftime('%Y-%m-%d %H:%M:%S.%f')}, LastImageTime={last_image_time.strftime('%Y-%m-%d %H:%M:%S.%f')}\n")
+    if len(TTFIs) == target_case.time:
+        lines.append(f"{target_case.cat_filename}    Average    TTFIs={(sum(TTFIs) / target_case.time):.2f}, FPS={(sum(FPSs) / target_case.time):.2f}, TTLI={(sum(TTLIs) / target_case.time):.2f}\n")
+    return lines, TTFIs, FPSs, TTLIs, timestamp_request, timestamp_first_image, timestamp_last_image
+
+def analysis_recon_timing_single_time(target_case: SingleCatCase, lines: List[str], protocol_filter: str = None):
+    result = None
+    TTFI = None
+    FPS = None
+    TTLI = None
+    timestamp_request = None
+    timestamp_first_image = None
+    timestamp_last_image = None
+    request_time = None
+    first_image_time = None
+    last_image_time = None
+    for new_line in lines:
+        if new_line.startswith("##"):
+            result = f"{target_case.cat_filename}    Failed:{new_line}\n"
+            break
+        else:
+            elements = [e for e in new_line.split(',') if e]
+            if len(elements) != 10:
+                result = f"{target_case.cat_filename}    Invalid line: {new_line}\n"
+                break
+            
+            protocol = elements[0]
+            if protocol_matches(protocol, protocol_filter):
+                print(f"Skipping line with filtered-out protocol: {protocol}")
+                continue
+            
+            TTFI = float(elements[3])
+            FPS = float(elements[4])
+            TTLI = float(elements[5])
+            timestamp_request = float(elements[6])
+            timestamp_first_image = float(elements[8])
+            timestamp_last_image = float(elements[9])
+            request_time = datetime.datetime.fromtimestamp(timestamp_request)
+            first_image_time = datetime.datetime.fromtimestamp(timestamp_first_image)
+            last_image_time = datetime.datetime.fromtimestamp(timestamp_last_image)
+            result = f"{target_case.cat_filename}    Success    Protocol={protocol}, TTFI={TTFI}, FPS={FPS}, TTLI={TTLI}, RequestTime={request_time.strftime('%Y-%m-%d %H:%M:%S.%f')}, FirstImageTime={first_image_time.strftime('%Y-%m-%d %H:%M:%S.%f')}, LastImageTime={last_image_time.strftime('%Y-%m-%d %H:%M:%S.%f')}\n"
+    return result, TTFI, FPS, TTLI, request_time, first_image_time, last_image_time
+
+def analysis_ig_obelus_log_single_time(normal_case: SingleCatCase, hyper_case: SingleCatCase, lines: List[str]):
+    rds_lines = [line for line in lines if "RawDataStore" in line]
+    for line in rds_lines:
+        line = line + "\n"
+    # start_line_index_normal = None
+    # start_line_index_hyper = None
+    # uuid_line_index_normal = None
+    # uuid_line_index_hyper = None
+    # for i, line in enumerate(rds_lines):
+    #     if normal_case.scankey in line:
+    #         start_line_index_normal = i
+    #     elif hyper_case.scankey in line:
+    #         start_line_index_hyper = i
+        
+    # if start_line_index_normal is None:
+    #     print(f"Cannot find scankey for {normal_case.cat_filename}")
+    #     return
+    # if start_line_index_hyper is None:
+    #     print(f"Cannot find scankey for {hyper_case.cat_filename}")
+    #     return
+    # client_uuid_pattern = re.compile(
+    #     r'\[RawDataStore\.[^\]]+\]\s+RawDataClient\s+\[([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})\]\s+created\s+for'
+    # )
+    
+    # for i in range(start_line_index_normal, len(rds_lines)):
+    #     match = client_uuid_pattern.search(rds_lines[i])
+    #     if match:
+    #         client_uuid_normal = match.group(1)
+    #         uuid_line_index_normal = i
+    #         break
+    # for i in range(start_line_index_hyper, len(rds_lines)):
+    #     match = client_uuid_pattern.search(rds_lines[i])
+    #     if match:
+    #         client_uuid_hyper = match.group(1)
+    #         uuid_line_index_hyper = i
+    #         break
+    # if client_uuid_normal is None or client_uuid_hyper is None:
+    #     print("Cannot find client UUID for both cases")
+    #     return
+    # normal_case.rds_client_uuid = client_uuid_normal
+    # hyper_case.rds_client_uuid = client_uuid_hyper
+    
+    return rds_lines
+
+
+def run_cases_concurrent_multi_times(normal_case: SingleCatCase, hyper_case: SingleCatCase, hyper_protocol: str):
+    times = normal_case.time
+    lines = []
+    TTFIs = []
+    FPSs = []
+    TTLIs = []
+    
+
+    before_pos_ig = get_file_position(ig_obelus_log)
+    print(f"Size of ig_obelus_log before running: {before_pos_ig} bytes")
+
+    for t in range(times):
+        time.sleep(10)
+        print(f"Running {normal_case.cat_filename} and {hyper_case.cat_filename} for round {t + 1}/{times} ...")
+        before_pos = get_file_position(recon_timing_log)
+        result_sum = run_cat_concurrent_single_time([normal_case, hyper_case])
+        if result_sum != 0:
+            print("At least one cat file failed")
+            return
+        after_pos = get_file_position(recon_timing_log)
+        if after_pos <= before_pos:
+            print("No new line in recon_timing")
+            
+        
+        inc = read_log_increment(recon_timing_log, before_pos)
+        new_lines = [line for line in inc.split('\n') if line]
+        result_line, TTFI, FPS, TTLI, ts_req, ts_fi, ts_li = analysis_recon_timing_single_time(normal_case, new_lines, hyper_protocol)
+        lines.append(result_line)
+        if TTFI is not None:
+            TTFIs.append(TTFI)
+        if FPS is not None:
+            FPSs.append(FPS)
+        if TTLI is not None:
+            TTLIs.append(TTLI)
+
+
+    if len(TTFIs) == times:
+        lines.append(f"{normal_case.cat_filename}    Average    TTFIs={(sum(TTFIs) / times):.2f}, FPS={(sum(FPSs) / times):.2f}, TTLI={(sum(TTLIs) / times):.2f}\n")
+
+    inc_ig = read_log_increment(ig_obelus_log, before_pos_ig)
+    new_lines_ig = [line for line in inc_ig.split('\n') if line]
+    ig_lines = analysis_ig_obelus_log_single_time(normal_case, hyper_case, new_lines_ig)
+
+    return lines, ig_lines, inc_ig
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Run the cat")
+    parser.add_argument("--cat", type=str, help="The cat file of normal cases")
+    parser.add_argument("-t", "--time", type=int, default=3, help="Number of times to run the cat (default 3)")
+    parser.add_argument("--protocol-filter", type=str, help="Filter out protocols matching this pattern (supports wildcards like *)")
+    parser.add_argument("--hyper-cat", help="The cat file of hyper case", type=str)
+    parser.add_argument("--debug", action="store_true", help="Enable debug mode and save the incremented log files")
+
+    args = parser.parse_args()
+    if not args.cat:
+        print("Please specify a normal cat file using --cat")
+        return -1
+    if not args.hyper_cat or not os.path.exists(args.hyper_cat):
+        print("Please specify a valid hyper cat file using --hyper-cat")
+        return -1
+    hyper_case = SingleCatCase(args.hyper_cat, args.time)
+    matched_cats = glob.glob(args.cat)
+    if not matched_cats:
+        print(f"No files matching '{args.cat}' found. Check your dir, now in {os.getcwd()}")
+        return -1
+    print(f"Found {len(matched_cats)} catfiles match {args.cat}")
+
+    if args.protocol_filter:
+        print(f"Protocol filter (excluded): {args.protocol_filter}")
+
+    all_lines = []
+    cat_id = 1
+    for cat_filename in matched_cats:
+        print(f"Ongoing {cat_id}/{len(matched_cats)}: {cat_filename}")
+        normal_case = SingleCatCase(cat_filename, args.time)
+        new_lines, ig_obelus_rds_lines, ig_obelus_lines = run_cases_concurrent_multi_times(normal_case, hyper_case, args.protocol_filter)
+        if len(new_lines) >= 1:
+            all_lines.extend(new_lines)
+        cat_id += 1
+        print(f"{cat_filename} done")
+        if args.debug:
+            cat_path = pathlib.Path(cat_filename)
+            with open(f"{cat_path.stem}_ig_obelus_increment_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.log", 'w', encoding='utf-8') as f:
+                f.write(ig_obelus_lines)
+            with open(f"{cat_path.stem}_ig_obelus_rds_increment_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.log", 'w', encoding='utf-8') as f:
+                f.writelines(ig_obelus_rds_lines)
+            print(f"DEBUG: Ig obelus incremented log saved to {cat_path.stem}_ig_obelus_incremented_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.log")
+        print("----------------------------------------")
+    if len(all_lines) == 0:
+        print("No new lines for recon timing")
+        return -1
+    timing_log_name = f"/usr/g/service/log/recon_timing_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+    with open(timing_log_name, 'w', encoding='utf-8') as f:
+        f.writelines(all_lines)
+    print(f"Recon timing results saved to {timing_log_name}")
+
+if __name__ == "__main__":
+    main()
